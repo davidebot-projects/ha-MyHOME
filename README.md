@@ -7,6 +7,57 @@ MyHOME Server / MH200N / F452V / F453V e compatibili.
 > **Versione 2.0** — Riscrittura completa con configurazione interamente via UI.
 > Non richiede più alcun file YAML.
 
+## Fork personale — 2.1.1.post1
+
+Questo fork deriva dalla release **2.1.1** di
+[Dav41K9/ha-MyHOME](https://github.com/Dav41K9/ha-MyHOME).
+La versione **2.1.1.post1** aggiunge una stima dello stato finale delle tapparelle
+non avanzate dopo 180 secondi dall'ultimo evento di direzione ricevuto dal gateway.
+La modifica è stata testata su Home Assistant **2026.8.2**.
+
+### Funzionamento delle tapparelle
+
+Con **advanced disabilitato** nelle opzioni della tapparella:
+
+- Salita: `opening`, poi `open` con posizione stimata al 100% dopo 180 secondi.
+- Discesa: `closing`, poi `closed` con posizione stimata allo 0% dopo 180 secondi.
+- Ogni nuovo evento di salita o discesa annulla il conteggio precedente e ne avvia
+  uno nuovo, anche se la direzione è la stessa.
+- Ogni tapparella ha un conteggio indipendente.
+
+Il conteggio parte dagli eventi del bus, quindi funziona anche con i pulsanti a
+parete, HomeKit e altri metodi di comando, purché il gateway ne invii gli eventi
+a Home Assistant. Alla scadenza si aggiorna solo lo stato software: non viene
+inviato un comando al motore. Gli attuatori avanzati mantengono il feedback nativo.
+
+Le impostazioni sono in `custom_components/myhome/cover.py`:
+
+```python
+TRAVEL_SECONDS = 180
+CANCEL_ON_STOP = True
+```
+
+Con `CANCEL_ON_STOP = True`, uno STOP annulla il conteggio in corso e lascia la
+posizione sconosciuta. Con `False`, lo stato finale viene assegnato comunque in
+base all'ultima direzione, anche se il motore è stato fermato prima.
+Le impostazioni valgono per tutte le tapparelle non avanzate e richiedono un
+riavvio di Home Assistant dopo la modifica.
+
+La posizione è stimata, non misurata: non vengono calcolate posizioni intermedie.
+Conteggi e stati stimati non vengono conservati al riavvio. Una nuova notifica di
+direzione, anche in risposta a una richiesta di stato, riavvia il conteggio.
+
+### Esposizione a HomeKit
+
+Esponi le entità `cover` tramite HomeKit Bridge. La classe `shutter` e i comandi
+di apertura, chiusura e stop sono già presenti nell'integrazione. Non serve
+aggiungere `type: shutter` alla configurazione HomeKit, né abilitare advanced
+per gli attuatori senza feedback di posizione.
+
+HomeKit usa la modalità base delle tapparelle e l'app Casa può anticipare
+graficamente la posizione quando invii un comando. Lo stato finale in Home
+Assistant viene assegnato alla scadenza dei 180 secondi.
+
 ---
 
 ## Funzionalità
@@ -55,10 +106,24 @@ MyHOME Server / MH200N / F452V / F453V e compatibili.
 1. Apri **HACS → Integrazioni → ⋮ → Repository personalizzati**
 2. Aggiungi l'URL del fork:
    ```
-   https://github.com/Dav41K9/ha-MyHOME
+   https://github.com/davidebot-projects/ha-MyHOME
    ```
 3. Cerca **"BTicino MyHOME"** e installa
 4. Riavvia Home Assistant
+
+### Passaggio dal repository di Dav41K9 a questo fork
+
+Entrambi i repository installano i file nella cartella `custom_components/myhome`.
+Mantieni una sola sorgente installata in HACS.
+
+1. Fai un backup di Home Assistant e della cartella MyHOME attualmente funzionante.
+2. Rimuovi il repository di Dav41K9 **da HACS**.
+3. Conserva l'integrazione MyHOME in **Impostazioni → Dispositivi e servizi**:
+   non eliminare il gateway o i dispositivi configurati.
+4. Aggiungi questo fork come repository personalizzato di tipo **Integration**
+   e scarica la release `v2.1.1.post1` quando sarà pubblicata.
+5. Riavvia Home Assistant solo dopo aver installato il fork.
+6. Verifica dispositivi, tapparelle ed entità HomeKit esistenti.
 
 ### Manuale
 
@@ -205,17 +270,108 @@ custom_components/myhome/
 
 ---
 
+## Pubblicazione e aggiornamento del fork
+
+### Pubblicare la versione 2.1.1.post1
+
+Dopo aver creato il commit e inviato le modifiche al branch `master` del fork,
+pubblica una release GitHub con tag **`v2.1.1.post1`**, titolo **`2.1.1.post1`**
+e destinazione il commit che contiene le modifiche. Il campo `version` in
+`custom_components/myhome/manifest.json` deve essere `2.1.1.post1`.
+
+Pubblica una release completa, non soltanto un tag: HACS deve scaricare la
+versione che contiene la modifica alle tapparelle.
+
+### Integrare la futura 2.1.2 di Dav41K9
+
+HACS segue le release di questo fork. Le modifiche del repository originale
+vanno prima unite al codice del fork e poi pubblicate in una nuova release.
+
+1. Salva qualsiasi modifica locale in un commit. Nel clone del fork esegui:
+
+   ```bash
+   git switch master
+   git pull --ff-only origin master
+   git status
+   git remote -v
+   ```
+
+   Continua solo con la cartella di lavoro pulita. `origin` deve puntare al tuo
+   fork e `upstream` a `https://github.com/Dav41K9/ha-MyHOME.git`.
+   Se `upstream` non è ancora presente, aggiungilo una sola volta:
+
+   ```bash
+   git remote add upstream https://github.com/Dav41K9/ha-MyHOME.git
+   ```
+
+2. Scarica i riferimenti del repository originale:
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+   Controlla il tag esatto nella pagina delle
+   [release di Dav41K9](https://github.com/Dav41K9/ha-MyHOME/releases).
+   Il formato può cambiare: il tag originale della 2.1.1 è `v.2.1.1`.
+   Sostituisci `UPSTREAM_TAG` con il tag esatto della nuova 2.1.2 ed esegui:
+
+   ```bash
+   git merge --no-ff --no-commit refs/tags/UPSTREAM_TAG
+   ```
+
+3. Controlla il risultato e risolvi eventuali conflitti, eliminando i marcatori
+   inseriti da Git. Conserva sia le correzioni dell'autore sia la logica dei
+   180 secondi. **Non sostituire il nuovo `cover.py` con una vecchia copia**:
+   potresti perdere le correzioni introdotte dalla nuova versione.
+   Mantieni invariati dominio `myhome`, ID dei dispositivi e identificativi
+   univoci delle entità. Se l'autore ha già incluso la stessa funzione, valuta
+   se la modifica locale serve ancora.
+4. Imposta la versione nel manifest a **`2.1.2.post1`**. Conserva i link alla
+   documentazione e alle segnalazioni di questo fork. Aggiorna anche la versione
+   e i riferimenti alla versione di base in questo README.
+5. Controlla le modifiche ed esegui gli eventuali controlli pertinenti del
+   repository originale:
+
+   ```bash
+   git diff HEAD -- custom_components/myhome/cover.py custom_components/myhome/manifest.json README.md
+   git diff --check
+   git status
+   ```
+
+   Per annullare un merge ancora in corso, usa `git merge --abort`.
+6. Quando il merge è pronto, crea il commit e invialo al fork:
+
+   ```bash
+   git add -u
+   git commit -m "Merge upstream 2.1.2 and retain shutter timing"
+   git push origin master
+   ```
+
+7. Pubblica una release GitHub con tag **`v2.1.2.post1`** che punti al commit
+   risultante su `master`.
+8. Fai un backup di Home Assistant, installa la nuova release da HACS e riavvia.
+   Controlla i log e verifica luci e altri dispositivi, apertura dal pulsante a
+   parete, chiusura da HomeKit, stati dopo 180 secondi, inversione di direzione,
+   STOP e conteggi indipendenti delle due tapparelle.
+
+Ripeti la procedura per le versioni successive dell'originale. Per un'altra
+revisione locale della stessa versione di base, aumenta il suffisso, ad esempio
+`2.1.2.post2`.
+
+---
+
 ## Crediti
 
 - Integrazione originale: [anotherjulien/MyHOME](https://github.com/anotherjulien/MyHOME)
 - Libreria OWNd: [anotherjulien/OWNd](https://pypi.org/project/OWNd/)
 - Riscrittura v2.0: questo fork
+- Base della versione personale: [Dav41K9/ha-MyHOME](https://github.com/Dav41K9/ha-MyHOME)
+- Fork personale e conteggio tapparelle: [davidebot-projects](https://github.com/davidebot-projects/ha-MyHOME)
 
 ---
 
 ## Licenza
 
 Vedi [LICENSE](LICENSE).
-```
 
 ---

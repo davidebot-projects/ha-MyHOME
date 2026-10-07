@@ -1,6 +1,8 @@
 """Covers / shutters (WHO 2)."""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from OWNd.message import OWNAutomationCommand, OWNAutomationEvent
 from homeassistant.components.cover import (
     ATTR_POSITION,
@@ -9,7 +11,8 @@ from homeassistant.components.cover import (
     CoverEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -22,6 +25,10 @@ from .const import (
     SUBENTRY_COVER,
 )
 from .entity import MyHOMEEntity
+
+TRAVEL_SECONDS = 180
+# False: even a STOP leaves the last-direction countdown running.
+CANCEL_ON_STOP = True
 
 
 async def async_setup_entry(
@@ -54,6 +61,37 @@ class MyHOMECover(MyHOMEEntity, CoverEntity):
         self._attr_device_class = CoverDeviceClass.SHUTTER
         self._attr_is_closed = None
         self._attr_current_cover_position = None
+        self._attr_is_opening = False
+        self._attr_is_closing = False
+        self._finish_cancel: Callable[[], None] | None = None
+
+    @callback
+    def _cancel_finish(self) -> None:
+        if self._finish_cancel is not None:
+            self._finish_cancel()
+            self._finish_cancel = None
+
+    @callback
+    def _start_finish(self, opening: bool) -> None:
+        self._cancel_finish()
+        # A basic actuator reports direction, not the actual position.
+        self._attr_is_closed = None
+        self._attr_current_cover_position = None
+
+        @callback
+        def finish(_now) -> None:
+            self._finish_cancel = None
+            self._attr_is_opening = False
+            self._attr_is_closing = False
+            self._attr_is_closed = not opening
+            self._attr_current_cover_position = 100 if opening else 0
+            self.async_write_ha_state()
+
+        self._finish_cancel = async_call_later(self.hass, TRAVEL_SECONDS, finish)
+
+    async def async_will_remove_from_hass(self) -> None:
+        self._cancel_finish()
+        await super().async_will_remove_from_hass()
 
     async def async_request_initial_state(self) -> None:
         await self._coordinator.send_status_request(OWNAutomationCommand.status(self._where))
@@ -74,8 +112,22 @@ class MyHOMECover(MyHOMEEntity, CoverEntity):
             )
 
     def handle_event(self, message: OWNAutomationEvent) -> None:
-        self._attr_is_opening = message.is_opening
-        self._attr_is_closing = message.is_closing
+        if message.is_opening is not None:
+            self._attr_is_opening = message.is_opening
+        if message.is_closing is not None:
+            self._attr_is_closing = message.is_closing
+        if not self._advanced:
+            if message.is_opening is True or message.is_closing is True:
+                self._start_finish(opening=message.is_opening is True)
+            elif (
+                message.is_opening is False
+                and message.is_closing is False
+                and self._finish_cancel is not None
+                and CANCEL_ON_STOP
+            ):
+                self._cancel_finish()
+                self._attr_is_closed = None
+                self._attr_current_cover_position = None
         if message.is_closed is not None:
             self._attr_is_closed = message.is_closed
         if message.current_position is not None:
